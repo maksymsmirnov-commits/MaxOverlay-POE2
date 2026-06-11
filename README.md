@@ -15,6 +15,13 @@ game. It works just as well on a normal local install.
 
 ## Screenshots
 
+In action — F5 over an item, the overlay opens on the opposite side so it never
+covers the game tooltip:
+
+<p align="center">
+  <img src="docs/ingame.jpg" alt="MaxOverlay in-game: overlay pricing the hovered jewel next to the real game tooltip">
+</p>
+
 <p align="center">
   <img src="docs/overlay.png" width="420" alt="MaxOverlay price-checking a unique spear: item card with DPS, prefix/suffix filters with range sliders, instant-buyout listings in divine">
 </p>
