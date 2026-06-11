@@ -1,0 +1,26 @@
+# Builds MaxOverlay-POE2.exe and attaches it to a GitHub Release
+# whenever a version tag (v*) is pushed. Releasing becomes:
+#   git tag v1.1.0 && git push --tags
+name: Build release exe
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt -r requirements-build.txt
+      - run: pyinstaller --noconfirm --clean maxoverlay.spec
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/MaxOverlay-POE2.exe
+          generate_release_notes: true

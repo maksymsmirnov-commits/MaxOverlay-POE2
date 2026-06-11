@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# PyInstaller build output
+build/
+dist/
+*.manifest
+
+# App cache (created at runtime in %LOCALAPPDATA%, but ignore local copies)
+poe2tmp/
+*.log
+
+# Local OCR/debug artifacts
+tooltip_crop.png
+fullscreen.png
+debug_crop.png
+*.tmp
+
+# Editors / OS / tooling
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db

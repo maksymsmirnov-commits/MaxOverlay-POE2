@@ -1,0 +1,16 @@
+# MaxOverlay — runtime dependencies (Windows only)
+mss>=10.0
+requests>=2.30
+Pillow>=10.0
+keyboard>=0.13.5
+pystray>=0.19
+
+# Native Windows OCR via the Windows Runtime projection
+winrt-runtime>=3.0
+winrt-Windows.Foundation>=3.0
+winrt-Windows.Foundation.Collections>=3.0
+winrt-Windows.Globalization>=3.0
+winrt-Windows.Graphics.Imaging>=3.0
+winrt-Windows.Media.Ocr>=3.0
+winrt-Windows.Storage>=3.0
+winrt-Windows.Storage.Streams>=3.0
