@@ -32,7 +32,7 @@ from PIL import Image
 
 APP_NAME = "MaxOverlay POE2"
 APP_ID = "MaxOverlay-POE2"      # filesystem/User-Agent-safe form (no spaces)
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 LEAGUE_TAG = "ROA"              # current-league abbreviation (Runes of Aldur);
                                 # update on league change — shown as "ROA v1.2.0"
 DISPLAY_VERSION = f"{LEAGUE_TAG} v{VERSION}"
@@ -427,8 +427,15 @@ def _stat_norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-# Mods with no relevant numeric value, or noise that doesn't help the search
-_STAT_SKIP = re.compile(r"requires|quality|corrupted|sockets|item level|^level \d", re.I)
+# Lines that must never enter mod matching: requirements/quality noise AND the
+# item's property lines ("Physical Damage: 108-210" etc.) — without this they
+# fuzzy-match real stats ("Deal no Elemental Damage", ghost "Adds X to X"...).
+_STAT_SKIP = re.compile(
+    r"requires|quality|corrupted|sockets|item level|^level \d"
+    r"|^\s*(physical|elemental|fire|cold|lightning|chaos) damage\s*:"
+    r"|^\s*(armou?r|evasion rating|energy shield|spirit|runic ward|block)\s*:"
+    r"|^\s*(critical hit chance|attacks per second|reload time)\s*:"
+    r"|^deal no ", re.I)
 
 
 def match_stats(ocr_lines, stat_db, index, min_score=0.82) -> list[dict]:
@@ -448,9 +455,20 @@ def match_stats(ocr_lines, stat_db, index, min_score=0.82) -> list[dict]:
         best, best_s = _fast_best(nline, stat_db, index)
         if best and best_s >= min_score and best["id"] not in seen:
             seen.add(best["id"])
+            fnums = [float(n) for n in nums[:4]]
+            # "Adds # to #" stats: the trade API compares the AVERAGE of the roll
+            val = None
+            if fnums:
+                val = (fnums[0] + fnums[1]) / 2 if (
+                    "# to #" in best["text"] and len(fnums) >= 2) else fnums[0]
+            # Imperfect match (e.g. OCR "Daze" -> closest DB stat "Maim"):
+            # flag it so the UI shows a "≈" and the user can double-check.
+            lw = set(_words(nline))
+            approx = any(w not in lw for w in _words(best["norm"]))
             out.append({
-                "id": best["id"], "value": float(nums[0]) if nums else None,
+                "id": best["id"], "value": val, "nums": fnums,
                 "text": best["text"], "score": round(best_s, 2),
+                "approx": approx,
                 "group": best.get("group", "Explicit"),
             })
     return out
@@ -1002,8 +1020,17 @@ def compute_equipment_filters(lines):
     aps = num(r"attacks per second")
     phys = rng(r"physical damage")
     ele = rng(r"fire damage") + rng(r"cold damage") + rng(r"lightning damage")
+    if ele == 0:
+        # Combined property line: "Elemental Damage: 49-70, 15-285"
+        for ln in lines:
+            mel = re.search(r"elemental damage\s*:?\s*(.+)", ln, re.I)
+            if mel:
+                pairs = re.findall(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)",
+                                   mel.group(1))
+                ele = sum((float(a) + float(b)) / 2 for a, b in pairs)
+                break
     chaos = rng(r"chaos damage")
-    crit = num(r"critical hit chance")
+    crit = round(num(r"critical hit chance"), 2)
     ar = num(r"armou?r"); ev = num(r"evasion rating"); es = num(r"energy shield")
     ward = num(r"runic ward"); spirit = num(r"spirit")
 
@@ -1103,6 +1130,14 @@ def _affix_kind(text: str):
     return None
 
 
+# LOCAL weapon mods: already folded into the weapon's DPS/crit/APS numbers, so
+# the equipment filters cover them. Listing them again as stat filters just
+# duplicates the UI (Awakened folds them into the properties the same way).
+_WEAPON_LOCAL_RX = re.compile(
+    r"adds # to # \w+ damage|#% increased physical damage"
+    r"|#% to critical hit chance|#% increased attack speed", re.I)
+
+
 def build_filters(item, matched, stat_db, equip=None):
     """
     Editable filters grouped like in-game.
@@ -1116,6 +1151,10 @@ def build_filters(item, matched, stat_db, equip=None):
     """
     is_u = item["unique"]
     filters = list(equip or [])   # Damage/Defenses go first (sort -2)
+
+    # Weapons: drop local mods already represented by the DPS/crit/APS filters
+    if any(f.get("equip") in ("dps", "pdps", "edps", "crit", "aps") for f in filters):
+        matched = [m for m in matched if not _WEAPON_LOCAL_RX.search(m["text"])]
 
     if not is_u:
         for ps in compute_pseudos(matched, stat_db):
@@ -1140,6 +1179,7 @@ def build_filters(item, matched, stat_db, equip=None):
         # Uniques: pre-enabled, exact roll as minimum. Rares: disabled, 90% min.
         filters.append({
             "id": m["id"], "text": m["text"], "value": val, "pseudo": False,
+            "nums": m.get("nums"), "approx": m.get("approx"),
             "enabled": bool(is_u and val is not None),
             "min_default": (int(val) if (is_u and val is not None)
                             else int(val * 0.9) if val is not None else None),
@@ -1707,7 +1747,16 @@ class Overlay:
                 tk.Checkbutton(row, variable=var, bg=PANEL, activebackground=PANEL,
                                selectcolor=GOLD, highlightthickness=0, bd=0
                                ).pack(side="left", padx=(2, 2))
-                txt = f["text"].replace("#", _fmt(f["value"]) if f["value"] is not None else "#")
+                # Fill each # with the actual OCR'd numbers in order, so ranged
+                # mods read "Adds 49 to 70 Fire Damage" (not "49 to 49").
+                nums = f.get("nums") or ([f["value"]] if f["value"] is not None else [])
+                txt, _i = f["text"], 0
+                while "#" in txt and _i < len(nums):
+                    txt = txt.replace("#", _fmt(nums[_i]), 1); _i += 1
+                if "#" in txt and f["value"] is not None:
+                    txt = txt.replace("#", _fmt(f["value"]))
+                if f.get("approx"):
+                    txt = "≈ " + txt
                 tk.Label(row, text=txt, bg=PANEL,
                          fg=PSEUDO_C if f.get("pseudo") else WHITE,
                          font=("Segoe UI", 9), anchor="w",
@@ -1995,6 +2044,7 @@ _PROP_PATTERNS = [
     ("Cold Damage",         r"cold damage\s*:?\s*([\d]+\s*[-–]\s*[\d]+)"),
     ("Lightning Damage",    r"lightning damage\s*:?\s*([\d]+\s*[-–]\s*[\d]+)"),
     ("Chaos Damage",        r"chaos damage\s*:?\s*([\d]+\s*[-–]\s*[\d]+)"),
+    ("Elemental Damage",    r"elemental damage\s*:?\s*([\d]+[-–][\d]+(?:\s*,\s*[\d]+[-–][\d]+)*)"),
     ("Critical Hit Chance", r"critical hit chance\s*:?\s*([\d.]+)\s*%?"),
     ("Attacks per Second",  r"attacks per second\s*:?\s*([\d.]+)"),
     ("Armour",              r"\barmou?r\s*:?\s*(\d+)"),
@@ -2030,8 +2080,15 @@ def _parse_item_props(lines):
         if label == "Quality":
             val = f"+{val}%"
         elif label == "Critical Hit Chance":
-            val = f"{val}%"
-        props.append((label, re.sub(r"\s", "", val) if "-" in str(val) else val))
+            try:
+                val = f"{round(float(val), 2):g}%"
+            except Exception:
+                val = f"{val}%"
+        if label == "Elemental Damage":
+            val = re.sub(r"\s*,\s*", ", ", re.sub(r"\s*([-–])\s*", "-", val))
+        elif "-" in str(val):
+            val = re.sub(r"\s", "", val)
+        props.append((label, val))
     # Requirements (Level / attributes) — keep original capitalization
     for ln in lines:
         m = re.search(r"requires?\s*:?\s*(.+)", ln, re.I)
