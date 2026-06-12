@@ -33,6 +33,9 @@ from PIL import Image
 APP_NAME = "MaxOverlay POE2"
 APP_ID = "MaxOverlay-POE2"      # filesystem/User-Agent-safe form (no spaces)
 VERSION = "1.2.0"
+LEAGUE_TAG = "ROA"              # current-league abbreviation (Runes of Aldur);
+                                # update on league change — shown as "ROA v1.2.0"
+DISPLAY_VERSION = f"{LEAGUE_TAG} v{VERSION}"
 
 # Cache/temp dir in %LOCALAPPDATA% (user-writable, no admin needed).
 TMP = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
@@ -1276,7 +1279,7 @@ class Overlay:
         title.bind("<ButtonRelease-1>", self._de)   # remember dragged position
         tk.Label(title, text=f"◈  {APP_NAME}", bg="#0f0e0c", fg=GOLD2,
                  font=(FN, 10, "bold")).pack(side="left", padx=(10, 2), pady=5)
-        tk.Label(title, text=f"v{VERSION}", bg="#0f0e0c", fg=MUTE,
+        tk.Label(title, text=DISPLAY_VERSION, bg="#0f0e0c", fg=MUTE,
                  font=(FN, 8)).pack(side="left", pady=5)
         tk.Button(title, text="✕", command=self.quit_app, bg="#0f0e0c", fg=MUTE,
                   font=(FN, 9), relief="flat", cursor="hand2", bd=0,
@@ -1393,7 +1396,7 @@ class Overlay:
         up = int(_time.time() - self._t0)
         h, m = up // 3600, (up % 3600) // 60
         lg = f" · {self._pill_league}" if self._pill_league else ""
-        return f"◈ {APP_NAME}{lg} · v{VERSION} · {h}:{m:02d}"
+        return f"◈ {APP_NAME}{lg} · {DISPLAY_VERSION} · {h}:{m:02d}"
 
     def _pill_tick(self):
         self.pill_lbl.config(text=self._pill_text())
@@ -2232,7 +2235,7 @@ def price_check(ov: Overlay):
 
 def main():
     import keyboard
-    print(f"{APP_NAME} v{VERSION} — starting...")
+    print(f"{APP_NAME} {DISPLAY_VERSION} — starting...")
     cfg = load_config()
     _state["cfg"] = cfg
     ov = Overlay()
@@ -2252,7 +2255,7 @@ def main():
                 pystray.MenuItem("Show overlay", lambda: ov.wake(), default=True),
                 pystray.MenuItem("Settings", lambda: ov.open_settings()),
                 pystray.MenuItem("Quit", lambda: os._exit(0)))
-            icon = pystray.Icon(APP_ID, img, f"{APP_NAME} v{VERSION}", menu)
+            icon = pystray.Icon(APP_ID, img, f"{APP_NAME} {DISPLAY_VERSION}", menu)
             _state["tray"] = icon
             icon.run()
         except Exception as e:
@@ -2286,7 +2289,7 @@ def main():
     ov.pill_set(_state["league"])
     tray = _state.get("tray")
     if tray:
-        tray.title = f"{APP_NAME} v{VERSION} — {_state['league']}"
+        tray.title = f"{APP_NAME} {DISPLAY_VERSION} — {_state['league']}"
     # Show the welcome card once at startup so users SEE it's running;
     # clicking into the game auto-hides it and leaves the status pill.
     ov.wake()

@@ -20,7 +20,16 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt -r requirements-build.txt
       - run: pyinstaller --noconfirm --clean maxoverlay.spec
+      # Release title = "MaxOverlay POE2 — <LEAGUE_TAG> v<VERSION>" (e.g. ROA v1.2.0),
+      # read from the constants in maxoverlay.py.
+      - id: meta
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path maxoverlay.py -Pattern 'VERSION = "(.+)"').Matches[0].Groups[1].Value
+          $l = (Select-String -Path maxoverlay.py -Pattern 'LEAGUE_TAG = "(.+)"').Matches[0].Groups[1].Value
+          "name=MaxOverlay POE2 - $l v$v" >> $env:GITHUB_OUTPUT
       - uses: softprops/action-gh-release@v2
         with:
+          name: ${{ steps.meta.outputs.name }}
           files: dist/MaxOverlay-POE2.exe
           generate_release_notes: true
