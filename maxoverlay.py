@@ -32,7 +32,7 @@ from PIL import Image
 
 APP_NAME = "MaxOverlay POE2"
 APP_ID = "MaxOverlay-POE2"      # filesystem/User-Agent-safe form (no spaces)
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # Cache/temp dir in %LOCALAPPDATA% (user-writable, no admin needed).
 TMP = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
@@ -754,7 +754,14 @@ def _build_query(item, stats, options=None):
     if equip_vals:
         query.setdefault("filters", {})["equipment_filters"] = {"filters": equip_vals}
     if mod_filters:
-        query["stats"] = [{"type": "and", "filters": mod_filters}]
+        # Stat group type (Awakened-style): default "and"; a "count" group with
+        # value.min=K means "match at least K of these mods" — great fallback
+        # when an exact AND search returns nothing.
+        grp = options.get("stat_group") or {"type": "and"}
+        g = {"type": grp["type"], "filters": mod_filters}
+        if grp.get("min") is not None:
+            g["value"] = {"min": grp["min"]}
+        query["stats"] = [g]
     return query
 
 
@@ -865,6 +872,21 @@ def _do_search(query, league):
     return r._json, None
 
 
+def _age_str(iso: str) -> str:
+    """Compact relative age of a listing ('5m' / '3h' / '2d'), like Awakened."""
+    try:
+        import datetime as _dt
+        t = _dt.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        s = (_dt.datetime.now(_dt.timezone.utc) - t).total_seconds()
+        if s < 3600:
+            return f"{int(s // 60)}m"
+        if s < 86400:
+            return f"{int(s // 3600)}h"
+        return f"{int(s // 86400)}d"
+    except Exception:
+        return ""
+
+
 def search_trade(item: dict, league: str, stats: list[dict] | None = None,
                  exact: bool = False, options: dict | None = None) -> dict:
     """
@@ -922,13 +944,18 @@ def search_trade(item: dict, league: str, stats: list[dict] | None = None,
                 # price.type: "~b/o" = firm buyout, "~price" = asking price.
                 # Listings with a "fee" come from the instant-buyout market.
                 ptype = (price.get("type") or "").replace("~", "")
+                acct = lst.get("account", {}) or {}
+                online = acct.get("online") or {}
                 prices.append({
                     "amount": price["amount"],
                     "currency": price.get("currency", "?"),
-                    "account": lst.get("account", {}).get("name", "?"),
+                    "account": acct.get("name", "?"),
                     "ptype": ptype,
                     "instant": "fee" in lst,
                     "demand": bool(lst.get("in_demand")),
+                    "age": _age_str(lst.get("indexed", "")),
+                    "afk": online.get("status") == "afk",
+                    "whisper": lst.get("whisper", ""),
                 })
         result = {"prices": prices, "total": total, "url": url, "stats_used": len(used)}
         _search_cache[ck] = (_time.time(), result)
@@ -977,21 +1004,33 @@ def compute_equipment_filters(lines):
     ar = num(r"armou?r"); ev = num(r"evasion rating"); es = num(r"energy shield")
     ward = num(r"runic ward"); spirit = num(r"spirit")
 
+    # Normalize quality-scaled values to 20% quality, matching the trade
+    # site's "at max Quality" columns (its dps/defense filters use those).
+    # Physical damage and defenses scale with quality; elemental does not.
+    q = 0.0
+    for ln in lines:
+        mq = re.search(r"qualit[yi]\s*:?\s*\+?(\d+)", ln, re.I)
+        if mq:
+            q = float(mq.group(1)); break
+    qf = (100 + 20) / (100 + q) if q < 20 else 1.0
+    sfx = " (Q20)" if qf > 1.0001 else ""
+
     rows = []   # (equip_id, label, value, enabled_by_default)
     if aps > 0 and (phys or ele or chaos):
-        pdps = round(phys * aps, 1)
+        pdps = round(phys * qf * aps, 1)
         edps = round(ele * aps, 1)
-        dps = round((phys + ele + chaos) * aps, 1)
-        if dps > 0:  rows.append(("dps", "Total DPS", dps, True))
-        if pdps > 0: rows.append(("pdps", "Physical DPS", pdps, False))
+        dps = round((phys * qf + ele + chaos) * aps, 1)
+        if dps > 0:  rows.append(("dps", f"Total DPS{sfx}", dps, True))
+        if pdps > 0: rows.append(("pdps", f"Physical DPS{sfx}", pdps, False))
         if edps > 0: rows.append(("edps", "Elemental DPS", edps, False))
         if crit > 0: rows.append(("crit", "Crit Chance", crit, False))
         if aps > 0:  rows.append(("aps", "Attacks/sec", aps, False))
     for eid, label, v in (("ar", "Armour", ar), ("ev", "Evasion", ev),
-                          ("es", "Energy Shield", es), ("ward", "Ward", ward),
-                          ("spirit", "Spirit", spirit)):
+                          ("es", "Energy Shield", es), ("ward", "Ward", ward)):
         if v > 0:
-            rows.append((eid, label, v, True))
+            rows.append((eid, f"{label}{sfx}", round(v * qf, 1), True))
+    if spirit > 0:
+        rows.append(("spirit", "Spirit", spirit, True))
 
     out = []
     for i, (eid, label, v, en) in enumerate(rows):
@@ -1223,7 +1262,8 @@ class Overlay:
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", 0.97)
         self.root.configure(bg=BG)
-        self.root.geometry("520x900+24+24")
+        _pos = load_config().get("win_pos") or [24, 24]
+        self.root.geometry(f"520x900+{int(_pos[0])}+{int(_pos[1])}")
 
         FN = "Segoe UI"
         # gold-bordered frame
@@ -1233,6 +1273,7 @@ class Overlay:
         # --- title bar (draggable + close) ---
         title = tk.Frame(wrap, bg="#0f0e0c"); title.pack(fill="x")
         title.bind("<ButtonPress-1>", self._ds); title.bind("<B1-Motion>", self._dm)
+        title.bind("<ButtonRelease-1>", self._de)   # remember dragged position
         tk.Label(title, text=f"◈  {APP_NAME}", bg="#0f0e0c", fg=GOLD2,
                  font=(FN, 10, "bold")).pack(side="left", padx=(10, 2), pady=5)
         tk.Label(title, text=f"v{VERSION}", bg="#0f0e0c", fg=MUTE,
@@ -1412,6 +1453,10 @@ class Overlay:
 
     # --- draggable window ---
     def _ds(self, e): self._x, self._y = e.x, e.y
+    def _de(self, e):
+        if self._cfg is not None:    # persist the dragged window position
+            self._cfg["win_pos"] = [self.root.winfo_x(), self.root.winfo_y()]
+            save_config(self._cfg)
     def _dm(self, e):
         self.root.geometry(f"+{self.root.winfo_x()+e.x-self._x}+{self.root.winfo_y()+e.y-self._y}")
 
@@ -1528,6 +1573,7 @@ class Overlay:
                 self._pill_show_now()
             else:
                 self.pill.withdraw()
+            self.root.update_idletasks()   # flush so nothing lands in the capture
         try:
             # On the tkinter thread: run directly (after+wait would deadlock).
             if threading.current_thread() is getattr(self, "_tk_thread", None):
@@ -1898,8 +1944,25 @@ class Overlay:
                     tk.Label(rw, text=pt, bg=rw["bg"],
                              fg=GREEN if pt == "b/o" else MUTE,
                              font=("Segoe UI", 7)).pack(side="left", padx=(0, 4))
-                tk.Label(rw, text=p["account"], bg=rw["bg"], fg=MUTE,
-                         font=("Segoe UI", 9), anchor="w").pack(side="left", fill="x", expand=True)
+                acc_lbl = tk.Label(rw, text=p["account"], bg=rw["bg"], fg=MUTE,
+                                   font=("Segoe UI", 9), anchor="w")
+                acc_lbl.pack(side="left", fill="x", expand=True)
+                if p.get("afk"):
+                    tk.Label(rw, text="afk", bg=rw["bg"], fg="#f0a030",
+                             font=("Segoe UI", 7)).pack(side="left", padx=(0, 4))
+                if p.get("age"):   # listing age, Awakened-style
+                    tk.Label(rw, text=p["age"], bg=rw["bg"], fg=MUTE,
+                             font=("Segoe UI", 8)).pack(side="right", padx=(0, 6))
+                # click anywhere on the row -> copy the whisper message
+                wsp = p.get("whisper")
+                if wsp:
+                    def _copy(e, w=wsp):
+                        self.root.clipboard_clear()
+                        self.root.clipboard_append(w)
+                        self.set_status("Whisper copied to clipboard", GREEN)
+                    for _w in (rw, acc_lbl):
+                        _w.bind("<Button-1>", _copy)
+                    rw.configure(cursor="hand2")
         self.root.after(0, u)
 
     def close(self): self.root.after(0, self.root.destroy)
@@ -2121,7 +2184,27 @@ def price_check(ov: Overlay):
             ov.set_status(f"{res['total']} results · {len(active)} filters", GREEN)
             return
 
-        # 0 results with filters: one unfiltered fallback for a base price.
+        # 0 exact results: before dropping to the base price, try a NEAR-MATCH
+        # search (Awakened-style "count" group): items matching at least N-1
+        # of the N mod filters. Far better comps than the unfiltered floor.
+        filtered_url = res.get("url")
+        mods_n = sum(1 for a in active if a.get("id"))
+        if mods_n >= 2:
+            opts2 = {**opts, "stat_group": {"type": "count", "min": mods_n - 1}}
+            res = search_trade(item, league, active, exact=True, options=opts2)
+            if _rate_limited(res):
+                return
+            if res.get("prices"):
+                res["note"] = (f"0 exact — showing items with at least "
+                               f"{mods_n - 1} of your {mods_n} mods.")
+                ov.show_result(res, league)
+                if filtered_url:
+                    ov._url = filtered_url
+                ov.set_status(f"{res['total']} near-matches "
+                              f"(≥{mods_n - 1}/{mods_n} mods)", "#f80")
+                return
+
+        # Last resort: unfiltered base price.
         if active:
             res2 = search_trade(item, league, [], exact=True, options=opts)
             if _rate_limited(res2):
@@ -2134,8 +2217,8 @@ def price_check(ov: Overlay):
                 # Keep the FILTERED query's URL on the ↗ Web button: the user
                 # opens exactly what they configured (even at 0 results) and
                 # can loosen it on the website.
-                if res.get("url"):
-                    ov._url = res["url"]
+                if filtered_url:
+                    ov._url = filtered_url
                 ov.set_status(f"0 exact comps — base price ({res2['total']} listed). "
                               "Loosen sliders for roll pricing.", "#f80")
                 return
